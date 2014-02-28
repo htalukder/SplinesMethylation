@@ -37,118 +37,117 @@ permTestNew<-function(dat,t=0,B=1000){
 
 ####SSRegionFinder uses SSANOVA to find regions of difference. 
 ###Function takes in data with response, class, Individual ID, position, and perm # for to perform
+newSSobject<-function(class,position,response){
+	obj = data.frame(class = class, position = position, response = response)
+	return(obj)
+}
 
+extractRegions<- function(interval_index,sign="",control){
+	verbose = control$verbose
 
+	# stopping conditions
+	if(length(interval_index) <= 0 ){ 
+		if(verbose) show(sprintf("There are no %s regions.",sign))
+		return()
+	}
 
-SSRegionFinder=function(data, Y, cl, indID, position, Perm){
+	# initialize values
+	diff_list = list()
+	
+	n_diff_intervals = sum( diff( interval_index ) > 1 ) < 1 
 
-require(gss)
-require(pracma)
+	# There are only one differing time points
+	if(n_diff_intervals){
+		diff_list[[1]] = interval_index
+	} else{
 
-#resp=data[,Y]
-#cla=factor(data[,cl])
-#inde=data[,indID]
-#posi=data[,position]
-dat=data.frame(resp=data[,Y], cla=factor(data[,cl]), inde=data[,indID], posi=data[,position])
-mod=ssanova(resp~posi*cla,partial=~inde,data=dat)
-x_seq=seq(min(dat$posi),max(dat$posi),by=1)
-predP=predict(mod,data.frame(posi=x_seq, cla=factor(1)), se=T,  inc=c("cla","posi:cla"))
-
-Region_pos=which((2*predP$fit+(1.645*2*predP$se))<0)
-
-if(length(Region_pos)>0){
-
-if(sum(diff(Region_pos)>1)<1){
-	k_pos=list()
-	k_pos[[1]]=Region_pos
-}else{
-	k_pos=list()
-	useInd=which(diff(Region_pos)>1)
-	i=1
-	while (i<=length(useInd))
-		{
-			k_pos[[i]]=Region_pos[1:useInd[i]]
-			Region_pos=Region_pos[-(1:useInd[i])]	
-			i=i+1	
+	# There are multiple differing time points
+	# This code should be sped up.
+		ind = which(diff(interval_index) > 1)
+		i=1
+		while(i <= length(ind)){
+			diff_list[[i]]=interval_index[1:ind[i]]
+			interval_index=interval_index[-(1:ind[i])]
+			i=i+1;
 		}
-	i=length(k_pos)+1
-	k_pos[[i]]=Region_pos
+		i=length(diff_list)+1
+		diff_list[[i]]=interval_index
 	}
-}else{
-	k_pos=c()
-	}
+	return(diff_list)
+}
 
-Region_neg=testpl=which((2*predP$fit-(1.645*2*predP$se))>0)
-if(length(Region_neg)>0){
+ssControl <- function(verbose=TRUE,seed=1){
+	list(verbose=verbose,seed=seed)
+}
 
-if(sum(diff(Region_neg)<1)){
-	k_neg=list()
-	k_neg[[1]]=Region_neg
-}else{
-	k_neg=list()
-	useInd=which(diff(Region_neg)>1)
-	i=1
-	while (i<=length(useInd))
-		{
-			k_neg[[i]]=Region_neg[1:useInd[i]]
-			Region_neg=Region_neg[-(1:useInd[i])]	
-			i=i+1	
+SSRegionFinder2<- function(obj,formula,terms,offset = 0,permMat,B = 1000,control=ssControl()){
+	# initialize
+	position =obj$position
+	verbose  =control$verbose
+	set.seed(control$seed)
+	# fit
+	fit   = ssanova(formula, data = obj)
+	x_seq = seq(min(position), max(position), by=1)
+	df    = data.frame(position = x_seq, class = factor(1))
+	pred  = predict(fit, df, se = TRUE, include = terms)
+
+	upper_interval = 2*pred$fit + (2 * 1.645 * pred$se)
+	lower_interval = 2*pred$fit - (2 * 1.645 * pred$se)
+
+	positive_regions = which( upper_interval < 0 ) # Which intervals are less than zero. 
+	negative_regions = which( lower_interval > 0 ) # Which lower intervals are greater than zero.
+
+	posR = extractRegions(positive_regions,"positive",control)
+	negR = extractRegions(negative_regions,"negative",control)
+
+	regions = c(posR, negR)
+	nregs = length(regions)
+
+	if(nregs > 0){
+		# initializing the permutations
+		permutationMatrix = permMat #### THIS WILL need to change to be a function
+		B = dim(permutationMatrix)[2]
+		permuteData = obj
+		
+		starts = sapply(regions,min)
+		ends   = sapply(regions,max)
+
+		areaPSp=matrix(NA, B, nregs)
+		# run permutations
+		for (i in 1:B){
+			permuteData$class = factor(permutationMatrix[,i])
+			fit_i             = ssanova(formula, data=permuteData)
+			pred_i            = predict(fit_i, df, se = T, include = terms)
+
+			# This next part can be simplified
+			areas_i = sapply(1:nregs,function(j){
+				mins = starts[j]  
+				maxs = ends[j]    
+				trapz(x = x_seq[starts[j]:ends[j]], y = abs(2*pred_i$fit[starts[j]:ends[j]]))
+			})
+			areaPSp[i,] = areas_i
+			if( (verbose & i%%50==0) ) show(i);
 		}
-	i=length(k_neg)+1
-	k_neg[[i]]=Region_neg
+
+		# Write the summary table now
+		areas = sapply(1:length(regions),function(i){
+			mins = starts[i]
+			maxs = ends[i]
+			trapz(x=x_seq[mins:maxs], y=abs(2*pred$fit[mins:maxs]))
+		})
+		
+		results = matrix(NA,length(regions),4)
+		colnames(results) = c("Start","End","Area","P-Value")
+		results[,1] = starts - offset
+		results[,2] = ends - offset
+		results[,3] = areas
+		# this next step can be simplified to rowMeans/colMeans (check which)
+		for (i in 1:nregs){
+			results[i,4]=mean(results[i,3]<areaPSp[,i]) # Is this less than or less than and equal to
+		}
+		res = list(result = results, permutated_areas = areaPSp,call=match.call())
+		return(res)
+	} else{
+		return("No interesting regions found.")
 	}
-}else{
-	k_neg=c()
-	}
-
-k=c(k_pos,k_neg)
-
-#return(k)
-#}
-
-#if (k>0){
-
-if (length(k)>0){
-
-Result=matrix(0, nrow=length(k), ncol=4)
-colnames(Result)=c("Start", "End", "Area", "P-Value")
-
-for (i in 1:nrow(Result)){
-Result[i,1]=min(k[[i]])
-Result[i,2]=max(k[[i]])
-Result[i,3]=trapz(x=x_seq[min(k[[i]]):max(k[[i]])], y=abs(2*predP$fit[min(k[[i]]):max(k[[i]])]))
 }
-
-new_dat=permTestNew(dat, t=0, B=Perm)
-areaPSp=matrix(0, Perm, nrow(Result))
-dat2=dat
-
-#fine up to here
-#return(Result)
-#}
-
-
-for (i in 1:Perm){
-        
-        dat2$cla=factor(as.numeric(new_dat$statusp[,i])-1)
-        mod=ssanova(resp~posi*cla, partial=~inde, data=dat2)
-        predPl=predict(mod, data.frame(posi=x_seq, cla=factor(1)), se=T, inc=c("posi","posi:cla"))
-        	for (j in 1:nrow(Result)){
-							areaPSp[i, j]=trapz(x=x_seq[Result[j,1]:Result[j,2]],  y=abs(2*predPl$fit[Result[j,1]:Result[j,2]]))
-						}				        
-        #show(i)
-}
-
-for (i in 1:nrow(Result)){
-	Result[i,4]=1-mean(Result[i,3]<areaPSp[,i])
-}
-
-#Here its fine
-#if (length(k)==0){
-#return("No Region Found")}else{
-	return(Result)}else{
-	return("No significant region found")
-}
-}
-
-#Example: SSRegionFinder(dat, 1, 2, 3, 4, 20)
