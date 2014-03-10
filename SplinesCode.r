@@ -80,7 +80,7 @@ ssControl <- function(verbose=TRUE,seed=1){
 	list(verbose=verbose,seed=seed)
 }
 
-SSRegionFinder2<- function(obj,formula,terms,offset = 0,permMat,B = 1000,control=ssControl()){
+SSRegionFinder<- function(obj,formula,terms,offset = 0,permMat,B = 1000,control=ssControl()){
 	# initialize
 	position =obj$position
 	verbose  =control$verbose
@@ -141,7 +141,7 @@ SSRegionFinder2<- function(obj,formula,terms,offset = 0,permMat,B = 1000,control
 		results[,1] = starts - offset
 		results[,2] = ends - offset
 		results[,3] = areas
-		# this next step can be simplified to rowMeans/colMeans (check which)
+		# this next step can be simplified to rowMeans/colMeans
 		for (i in 1:nregs){
 			results[i,4]=mean(results[i,3]<areaPSp[,i]) # Is this less than or less than and equal to
 		}
